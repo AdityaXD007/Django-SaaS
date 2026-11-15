@@ -64,6 +64,8 @@ LOCAL_APPS = [
     "apps.core",
     "apps.accounts",
     "apps.tenants",
+    "apps.invitations",
+    "apps.projects",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -178,6 +180,31 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "Multi-tenant SaaS backend starter",
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    # Security schemes: JWT bearer token + X-Tenant header for Swagger Authorize dialog.
+    "APPEND_COMPONENTS": {
+        "securitySchemes": {
+            "jwtAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+                "description": "JWT access token obtained from /api/auth/token/.",
+            },
+            "XTenant": {
+                "type": "apiKey",
+                "in": "header",
+                "name": "X-Tenant",
+                "description": "Tenant slug resolved from the X-Tenant header.",
+            },
+        }
+    },
+    "SECURITY": [
+        {"jwtAuth": []},
+        {"XTenant": []},
+    ],
+    "ENUM_NAME_OVERRIDES": {
+        "MembershipRoleEnum": "apps.tenants.models.Membership.Role",
+        "InvitationRoleEnum": "apps.invitations.models.Invitation.Role",
+    },
 }
 
 
@@ -193,5 +220,17 @@ CELERY_BROKER_URL = env("REDIS_URL")
 CELERY_RESULT_BACKEND = env("REDIS_URL")
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 300
+
+# Email configuration (Phase 4 — invitations)
+EMAIL_BACKEND = env(
+    "EMAIL_BACKEND",
+    default="django.core.mail.backends.console.EmailBackend",
+)
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="noreply@example.com")
+
+# Invitation settings
+INVITATION_EXPIRY_DAYS = env.int("INVITATION_EXPIRY_DAYS", default=7)
+FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
+INVITATION_RETURN_TOKEN = env.bool("INVITATION_RETURN_TOKEN", default=False)
 
 

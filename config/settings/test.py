@@ -6,4 +6,6 @@ CELERY_TASK_ALWAYS_EAGER = True
 CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 
 DATABASES["default"]["CONN_MAX_AGE"] = 0
+ALLOWED_HOSTS = ["localhost", "127.0.0.1", "testserver"]
+INVITATION_RETURN_TOKEN = True
 

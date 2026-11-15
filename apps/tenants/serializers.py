@@ -36,3 +36,9 @@ class TenantMemberSerializer(serializers.ModelSerializer):
         model = Membership
         fields = ("id", "user", "role", "created_at")
         read_only_fields = fields
+
+
+class MemberRoleUpdateSerializer(serializers.Serializer):
+    """Used to validate a role-change PATCH on a membership."""
+
+    role = serializers.ChoiceField(choices=Membership.Role.choices)

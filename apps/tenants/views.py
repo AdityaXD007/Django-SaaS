@@ -1,12 +1,32 @@
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Membership
-from .permissions import IsTenantMember
-from .serializers import TenantMemberSerializer, TenantSerializer
+from .permissions import TENANT_ACCESS_DENIED_DETAIL, IsTenantMember
+from .serializers import MemberRoleUpdateSerializer, TenantMemberSerializer, TenantSerializer
+
+LAST_OWNER_MSG = "Cannot remove or demote the last owner of this tenant."
+OWNER_PROTECTED_MSG = "Only an owner can modify or remove another owner, or grant the owner role."
+
+
+def _get_scoped_membership(request, membership_id):
+    """Return the Membership for membership_id scoped to request.tenant, or 404."""
+    try:
+        return Membership.objects.select_related("user").get(
+            id=membership_id, tenant=request.tenant
+        )
+    except Membership.DoesNotExist:
+        from rest_framework.exceptions import NotFound
+
+        raise NotFound() from None
+
+
+def _owner_count(tenant):
+    return Membership.objects.filter(tenant=tenant, role=Membership.Role.OWNER).count()
 
 
 class TenantListView(APIView):
@@ -53,3 +73,78 @@ class CurrentTenantMembersView(APIView):
         )
         serializer = TenantMemberSerializer(members, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class MembershipDetailView(APIView):
+    """
+    PATCH  /api/tenants/current/members/<id>/  — change role (admin/owner only).
+    DELETE /api/tenants/current/members/<id>/  — remove member or self-leave.
+
+    Rules:
+    - Admins cannot modify/remove owners or grant the owner role.
+    - The last remaining owner cannot be demoted or removed.
+    - A member may remove themselves (leave) unless they are the last owner.
+    """
+
+    permission_classes = (IsAuthenticated, IsTenantMember)
+
+    @extend_schema(
+        summary="Update a membership's role",
+        request=MemberRoleUpdateSerializer,
+        responses={200: TenantMemberSerializer},
+    )
+    def patch(self, request, membership_id):
+        caller_membership = request.membership
+        target = _get_scoped_membership(request, membership_id)
+
+        # Only admin/owner may change roles.
+        if caller_membership.role not in (Membership.Role.OWNER, Membership.Role.ADMIN):
+            raise PermissionDenied(TENANT_ACCESS_DENIED_DETAIL)
+
+        serializer = MemberRoleUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        new_role = serializer.validated_data["role"]
+
+        # Admins cannot touch owners or grant the owner role.
+        if caller_membership.role == Membership.Role.ADMIN:
+            if target.role == Membership.Role.OWNER:
+                raise PermissionDenied(OWNER_PROTECTED_MSG)
+            if new_role == Membership.Role.OWNER:
+                raise PermissionDenied(OWNER_PROTECTED_MSG)
+
+        # Protect last owner from demotion.
+        if target.role == Membership.Role.OWNER and new_role != Membership.Role.OWNER:
+            if _owner_count(request.tenant) <= 1:
+                raise ValidationError(LAST_OWNER_MSG)
+
+        target.role = new_role
+        target.save(update_fields=["role"])
+        return Response(TenantMemberSerializer(target).data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="Remove a member or leave the workspace",
+        responses={204: None},
+    )
+    def delete(self, request, membership_id):
+        caller_membership = request.membership
+        target = _get_scoped_membership(request, membership_id)
+
+        is_self = target.user_id == request.user.id
+
+        if not is_self:
+            # Only admin/owner can remove others.
+            if caller_membership.role not in (Membership.Role.OWNER, Membership.Role.ADMIN):
+                raise PermissionDenied(TENANT_ACCESS_DENIED_DETAIL)
+            # Admins cannot remove owners.
+            if (
+                caller_membership.role == Membership.Role.ADMIN
+                and target.role == Membership.Role.OWNER
+            ):
+                raise PermissionDenied(OWNER_PROTECTED_MSG)
+
+        # Protect last owner.
+        if target.role == Membership.Role.OWNER and _owner_count(request.tenant) <= 1:
+            raise ValidationError(LAST_OWNER_MSG)
+
+        target.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
